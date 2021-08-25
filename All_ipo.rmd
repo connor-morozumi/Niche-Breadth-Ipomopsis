@@ -1,0 +1,558 @@
+---
+title: "All Ipo"
+author: "Kelly Endres and Connor Morozumi"
+date: "April 17, 2020"
+output: html_document
+---
+This R Markdown file contains all code for Endres et al. 2021 manuscript investigating the effects of drought on Ipomopsis aggregata niche breadth. We utilized Ipomopsis visitation data from several sites over five years, 1997, 1998, 2001, 2012, and 2018, with 2012 and 2018 determined to be drought years. Between years we compared visitor abundance, community change, and richness. We also analyzed weather data to confirm drought year determination. 
+
+###Code Overview
+
+1. Drought Analysis
++ Adonis
++ NMDS
+2. Visitation Summary Statistics
+3. Visitor Abundance
++ glmm abundance analysis
+4. Richness
++ glmm analysis - Visit richness
++ iNEXT analysis - Visit richness
+5. Community Change
++ Adonis analysis
++ NMDS
+
+
+
+####Package Load and Data Import
+
+```{r packages, include=FALSE}
+
+#load packages 
+library(glmmTMB)
+library(fitdistrplus)
+library(DHARMa)
+library(ggplot2)
+library(tidyverse)
+library(vegan)
+library(dplyr)
+library(GGally)
+library(reshape2)
+library(iNEXT)
+library(gridExtra)
+library(viridis)
+library(cowplot)
+```
+
+These analyses require the associated datasets:
+gothicweather.csv
+total visits per site per year by each visitor catagory.csv
+visit.abundance.by.observation.day.csv
+
+```{r load data}
+weatherdf = read.csv("gothicweather.csv")
+
+all= read.csv("total visits per site per year by each visitor catagory.csv")
+
+all.years.ab= read.csv("visit.abundance.by.observation.day.csv")
+
+```
+
+
+### 1. Drought Analysis
+
+Here we confirm that our catagorization of 2012 and 2018 as drought years is accurate 
+
+```{r data import}
+
+#import data
+weatherdf<- read.csv("gothicweather.csv")
+
+# water is in inches so convert to cm
+weatherdf$Watercm= weatherdf$Water * 2.54
+
+# remove winters before 1994/95
+weatherdf = weatherdf[c(17:32,37:43),]
+
+# if only 2012 and 2018 are classified as drought
+weatherdf= weatherdf %>%
+  mutate(Drought_New = as.factor(ifelse(Winter == "2011-12" | Winter== "2017-18", "Drought", "Non Drought")))
+
+
+```
+
+With the data loaded, it needs to be reformatted as a matrix. The non-numeric columns need to be removed, as they can't be used in the nmds. 
+
+```{r matrix formatting}
+
+#create matrix
+mat <- as.matrix(weatherdf)
+
+#rename rows
+row.names(mat) <- weatherdf$Winter
+
+#delete non-numeric columns
+colnames(mat)[1] <- "1"
+colnames(mat)[5] <- "5"
+colnames(mat)[6] <- "6"
+mat <- mat[, - c(1, 5, 6)]
+```
+
+The matrix needs to be formatted further to fit the form for the NMDS analysis. The drought column needs to be removed from the dataframe containing the rest of the data and put into its own value. 
+
+```{r create df}
+
+# Make dataframe
+dmat <- as.data.frame(mat) 
+
+#change columns to numeric
+dmat$Total <- as.numeric(as.character(dmat$Total))
+dmat$Apr.1 <- as.numeric(as.character(dmat$Apr.1))
+dmat$May.1 <- as.numeric(as.character(dmat$May.1))
+dmat$Water <- as.numeric(as.character(dmat$Water))
+dmat$Above.freezing <- as.numeric(as.character(dmat$Above.freezing))
+dmat$Days.covered <- as.numeric(as.character(dmat$Days.covered))
+dmat$Drought <- as.numeric(as.character(dmat$Drought))
+
+#create value with drought information
+gr <- c(dmat$Drought)
+
+#remove drought column from other data
+colnames(dmat)[7] <- "7" #rename
+dmat2 <- dmat[, -c(7:9)] #remove
+```
+
+Now that the data is formatted properly analysis can begin. We used analysis of variance with ADONIS and NMDS to visualize differences between drought and non-drought years. We expect that 2012 and 2018 will be drought years. 
+
+# Adonis
+
+Create a separate dataframe is of just Drought information. 
+
+
+```{r}
+
+des= weatherdf[,c(1, 12)] #remove everything but drought status
+
+rownames(des) <- des[,1]
+des[,1] <- NULL
+
+```
+
+Compute distances with Morisita-Horn
+
+```{r}
+dist.mat <- vegdist(dmat2, method = "horn")
+```
+
+Run analysis of variance with adonis2
+```{r}
+
+model= adonis2(dist.mat ~ Drought_New, des, perm = 999)
+
+```
+
+Drought is highly significant! Our drought categorization explains multivariate composites of many weather variables.
+
+# NMDS
+Visualize with the function metaMDS. 
+
+```{r NMDS}
+
+# run a NMDS ordination
+ord <- metaMDS(dmat2)
+```
+
+Because we have a large dataset, the function automatically performs a square root transformation using Wisconsin standardization. 
+
+Fit an envfit of apriori drought status
+```{r}
+data.envfit <- envfit(ord, gr, lwd = 2)
+```
+
+
+Plot the NMDS 
+
+```{r plotting}
+
+plot(ord, disp="sites", type="n")
+  ordihull(ord, gr, col=c("mediumturquoise", "indianred1"), lwd=3)
+  ordiellipse(ord, gr, draw="polygon", col=c("mediumturquoise", "indianred1"), alpha = c(50, 50))
+  orditorp(ord,display="species",col="black",air=0.01, cex = .8)
+  # orditorp(ord,display="sites", select = sel, col= "black", air=0.01,cex=1)
+  points(ord, display = "sites", cex = 0.5, pch = 3, col = "black")
+plot(data.envfit, col = "black", cex = .5)
+```
+
+This visualization gives several important pieces of information. Green/blue specifies Non-drought and red is Drought. We see that the two areas show no overlap, indicating that the years are different in terms of weather. 
+
+### 2. Visitation Summary Statistics
+
+
+```{r reshape visitation data for Table 1}
+all.long= all %>% 
+  pivot_longer(cols = Butterfly:Wasp ,names_to = "Species" , values_to = "total.visits")
+
+Table1= merge(all.long %>% 
+  group_by(Year, Species) %>% 
+  summarise_at(vars(total.visits), funs(sum)) %>% 
+  pivot_wider(names_from = Species, values_from = total.visits ),
+
+  all.long %>% 
+  group_by(Year) %>% 
+  summarise_at(vars(total.visits), funs(sum)), by = "Year")
+
+Table1 %>%
+    mutate_at(vars(c("Bumblebee", "Butterfly","Hoverfly","Hummingbird","Other.fly","Solitary.bee","Wasp")), 
+               function (x) (x/Table1$total.visits)*100)
+
+```
+
+## 3. Visitor Abundance
++ glmm abundance analysis
+
+With the following code we compare visitor abundance between years. This is important as we are not able to look at straight abundances between years due to sampling effort differences. We want to compare these as it is an important aspect of how drought may impact plant-pollinator communities. 
+
+To examine abundance differences and account for sampling effort differences, we will be using a linear mixed effect model, glmmTMB adding several different fixed and random effects. 
+
+
+###Abundance Analysis
+
+The first step to examine visitor abundance between drought and non-drought years is to determine the correct distribution for our data. It is most likely negative binomial, so we start by checking for that distribution.
+
+```{r abundance distribution fit}
+
+#fit data distribution
+distcheck <- fitdist(all.years.ab$Visitor.Abundance, "nbinom")
+
+#summarize nbinom fit
+summary(distcheck)
+
+#plot nbinom fit
+plot(distcheck)
+```
+
+According the the plot of the distribution the data fits a negative binomial distribution. 
+
+Now we are able to run our linear mixed effects model (glmmTMB) using a negative binomial distribution (nbinom2). Our response variable is given as total visitor abundance for each individual site visit. Drought, observer number, and amount of time observing are fixed effects, while site nested within year is a random effect. 
+
+```{r abundance model}
+
+#create model
+abundancemod <- glmmTMB(Visitor.Abundance ~ Drought + Observers + Time + (1|Site/Year), all.years.ab, family = "nbinom2")
+
+#summary
+summary(abundancemod)
+```
+
+This indicates that the presence of drought impacts observed visitor abundance. The amount of time spent observing also impacts visitor abundance. 
+
+Checking assumptions with the package `DHARMa`
+```{r check model assumptions}
+gg <- residuals(abundancemod)
+
+plot(gg)
+
+all.years.ab$residuals <- gg
+
+all.years.ab$fitted <- abundancemod$fitted
+
+simoutput <- simulateResiduals(fittedModel = abundancemod, n = 250)
+
+plot(simoutput)
+```
+
+Plot 1a
+```{r plot visit abundance}
+# change factor levels for color plotting
+all.years.ab$Drought <- factor(all.years.ab$Drought, levels = c("Non-drought", "Drought"))
+
+visit=ggplot(all.years.ab, aes(x=Drought, y=Visitor.Abundance)) +
+  geom_boxplot(outlier.alpha  =  0, size = 0.5, width = 0.5) +
+  geom_point(aes(colour = Drought), alpha = 0.5, size = 3, position = position_jitter(w=0.2, h=0)) +
+  theme_classic() + 
+  labs(y="Visitor Abundance") +
+  theme(legend.position = "none", axis.title.x = element_blank(), axis.title = element_text(size=16), axis.text=element_text(size=14), plot.title  = element_text(hjust = 0.02, face = "bold", size= 18)) +
+  scale_color_viridis(discrete=TRUE)
+
+visit
+```
+** note plot may look slightly different each time the code is run because there is a `geom_jitter` function that operates randomly. This makes only superficial difference and does not change the interpretation of the graph.
+
+
+## 4. Richness
+
+# Summary stats richness
+
+```{r}
+# Just averages across year-site 
+all.years.ab %>% 
+  group_by(Year, Site) %>%
+  tally(Richness)
+  
+all.years.ab %>% 
+  group_by(Drought) %>%
+  summarize(mean_rich= mean(Richness))
+
+# Mean richness was1.750 in drought years and 0.697 in non-drought years
+
+# but this doesn't account for effort so mean of a mean of a mean might yield different results
+
+# first average within site-year
+mean= all.years.ab %>%
+  group_by(Year, Site, Drought) %>%
+  summarize(site_rich= mean(Richness))
+
+
+year_mean= mean %>%
+  group_by(Year, Drought) %>%
+  summarize(year_rich= mean(site_rich))
+
+year_mean %>%
+  group_by(Drought) %>%
+  summarize(grand_mean= mean(year_rich))
+
+# changes values slightly
+# Non-drought	0.6931687			
+# Drought	1.4957265	
+
+# Abundance the same way
+# Just averages across year-site 
+all.years %>% #CM CHANGE this to fit the name of the df in this markdown
+  group_by(Year, Site) %>%
+  tally(Visitor.Abundance)
+  
+all.years %>% 
+  group_by(Drought) %>%
+  summarize(mean_abund= mean(Visitor.Abundance))
+
+# Mean abundance was 3.875 in drought years and 1.725 in non-drought years
+
+# but this doesn't account for effort so mean of a mean of a mean might yield different results
+
+# first average within site-year
+mean= all.years.ab %>%
+  group_by(Year, Site, Drought) %>%
+  summarize(site_abud= mean(Visitor.Abundance))
+
+
+year_mean= mean %>%
+  group_by(Year, Drought) %>%
+  summarize(year_abund= mean(site_abud))
+
+year_mean %>%
+  group_by(Drought) %>%
+  summarize(grand_mean= mean(year_abund))
+
+# changes values slightly
+# Non-drought	1.670445			
+# Drought	3.183226	
+```
+
+##Richness analysis with glmm
+
+```{r}
+c <- fitdist(all.years.ab$Richness, "nbinom")
+
+plot(c)
+
+model3 <- glmmTMB(Richness ~ Drought + Observers + Time + (1|Site/Year), all.years.ab, family = "nbinom2")
+
+summary(model3)
+
+# check residuals
+gg2 <- residuals(model3)
+plot(gg2)
+
+
+all.years.ab$residuals2 <- gg2
+
+all.years.ab$fitted2 <- model3$fitted
+
+simoutput2 <- simulateResiduals(fittedModel = model3, n = 250)
+plot(simoutput2)
+
+richness= ggplot(all.years.ab, aes(x=Drought, y=Richness)) +
+  geom_boxplot(outlier.alpha  =  0, size = 0.5, width = 0.5) +
+  geom_point(aes(color = Drought), alpha = 0.3, size = 3, position = position_jitter(w=0.2, h=0)) +
+  theme_classic() + 
+  labs(x="Drought", y="Richness") +
+  theme(legend.position = "none", axis.title.x = element_blank(), axis.title = element_text(size=16), axis.text=element_text(size=14), plot.title  = element_text(hjust = 0.02, face = "bold", size= 18)) +
+  scale_color_viridis(discrete=TRUE)
+
+
+```
+
+Plot 1a and 1b in panel
+```{r}
+# use cowplot
+panel=plot_grid(visit, richness, labels = c('A', 'B'))
+
+ggsave("Figure 1 Abundance and Richness_revision", panel, device="pdf", width= 16.6, height = 14.0, units= "cm")
+```
+
+# iNEXT analysis - Visit richness
+
+```{r}
+totals= as.data.frame(t(Table1))
+names(totals) <- totals[1,]
+totals <- totals[-1,]
+
+#remove totals row
+totals=totals[-8,]
+
+# change to a matrix
+tv = as.matrix(totals)
+```
+
+Next the drought and non-drought data is combined into a different dataframe. Sum the drought data (2012 and 2018) and then the non-drought data (1997, 1998, 2001). 
+
+```{r}
+grouped=totals %>% 
+  transmute(Drought= `2012`+ `2018`, Nondrought= `1997`+ `1998` +`2001`)
+```
+
+
+Next is the actual iNEXT analysis. We use only hill numbers 0 (species richness) 
+
+#### by year
+
+separate the years by diversity order (here just species richness). 
+
+```{r inext by year}
+#species richness
+d1 <- iNEXT(tv, q=c(0), datatype="abundance", endpoint=NULL)
+
+```
+
+
+```{r plot 2b}
+
+# plot richness
+
+g3 <- ggiNEXT(d1, type=1, grey=T) + 
+  theme_classic() + 
+  xlim(0,350) +
+  ylim(0, 7.5) +
+  scale_colour_manual(values=c("#440154FF", "#440154FF", "#440154FF","#FDE725FF","#FDE725FF")) +
+  scale_fill_manual(values=c("#440154FF", "#440154FF", "#440154FF","#FDE725FF","#FDE725FF")) +
+  scale_shape_manual(values=c(15, 16, 17, 19, 18)) +
+  labs(x = "Number of individual visits", y = "Visitor category diversity") +
+  theme(axis.title = element_text(size=16), axis.text=element_text(size=14), plot.title = element_text(hjust = 0.02, size= 18, face="bold"), legend.title=element_blank(),legend.text = element_text(size=8), legend.position = c(0.89,0.3)) + 
+ guides(linetype = FALSE)
+
+# change size of text
+gb_3 <- ggplot_build(g3)
+gb_3$data[[1]]$size <- 4
+gt3 <- ggplot_gtable(gb_3)
+
+```
+
+# By Drought vs non-drought
+
+```{r grouped inext}
+i1 <- iNEXT(grouped, q=c(0), datatype="abundance", endpoint=NULL)
+```
+
+```{r plot fig 2}
+# richness
+gt4 <- ggiNEXT(i1, type=1, grey=T) + 
+  xlim(0,300) +
+  ylim(0, 7.5) +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.02, face = "bold", size= 18), axis.title = element_text(size=16), axis.text=element_text(size=14), legend.position = c(0.85,0.2), legend.title=element_blank()) + 
+ guides(linetype = FALSE) +
+  scale_colour_manual(values=c("#FDE725FF","#440154FF")) +
+  scale_fill_manual(values=c( "#FDE725FF","#440154FF")) +
+  labs(x = "Number of individual visits", y = "Visitor category diversity") 
+   # labs(title = "(a)")
+
+gb_4 <- ggplot_build(gt4)
+gb_4$data[[1]]$size <- 4
+gt4 <- ggplot_gtable(gb_4)
+
+
+
+#graph together
+
+panel= grid.arrange(gt4, gt3, ncol=2)
+ggsave("Figure 2 Rarefied Richness.pdf", panel, device="pdf", width= 16.6, height = 12, units= "cm")
+```
+
+### 5. Community Change
++ Adonis analysis
++ NMDS
+
+This set of analyses looks at differences in community composition between drought and non-drought years via dissimilarity using permutational multivariate analyses. This requires construction  of community similarity/dissimilarity matrices and conducting Adonis analyses, with drought vs. nondrought as the fixed effects. Adonis is useful for this analysis as it uses strata which takes into account random effects. We use the Morisita-Horn index with Adonis as it is insensitive to differences in sampling effort among categories. Therefore we can use raw data without correcting for sampling effort. 
+
+####Data formatting
+
+Load dataframe containing total visits per site by each visitor category. 
+
+Make df into a matrix
+``` {r}
+all= column_to_rownames(all, "Site")
+#remove descriptive columns
+all.years <- all[,-c(8, 9)]
+#make all column numeric
+all.years[] <- lapply(all.years, as.numeric)
+#transform into matrix
+all.years <- as.matrix(all.years)
+```
+
+To go with this dataframe we are creating a second dataframe that contains site, year, and drought information. 
+
+```{r community year other variables dataframe}
+#create descriptive dataframe
+all.des <- as.data.frame(all[,-c(1:7)])
+
+#create value with drought information
+Drought <- c(all$Drought)
+```
+
+####Adonis analyses
+
+Now that the data formatting is complete community composition analyses can be completed. Here we are using the Morisita-Horn method (horn) to examine visitation between years. 
+
+```{r adonis analyses}
+
+# adonis(beta ~ Drought, all.des, perm = 999)
+adonis(all.years ~ Drought, all.des, perm = 100000, method= "horn")
+```
+
+Looking at the output of the permutational multivariate analysis, we do not find statistically significant differences in community composition (p > 0.05). 
+
+
+####NMDS analysis
+```{r NMDS}
+# run NMDS ordination
+nmds <- metaMDS(all.years, distance = "horn")
+```
+
+
+Analyzing code outputs:
+
+```{r analyze output} 
+#call function output
+nmds
+```
+
+This gives us lots of information. We can see the transformations used on the data (wisconsin(sqrt)), the distance measure used (horn), number of dimensions (2), as well as other outputs. The output is automatically rotated so that axis 1 has larger explanatory power. Goodness of fit is given with stress. Here, stress = 0.18 indicating that the output is a fair match for this dataset. 
+
+Plot it
+```{r plot fig3}
+
+#plot NMDS
+  pdf('fig3.pdf')
+  pl <- ordiplot(nmds, type = "none")
+points(pl, "sites", pch=c(rep(17, 9), rep(19, 33)), col=c(rep("#440154FF", 9), rep("#FDE725FF", 33)), bg=c(rep("#440154FF", 9), rep("#FDE725FF", 33)), cex=1.2)
+ordiellipse(nmds,groups=Drought,draw="polygon",col=c("#FDE725FF", "#440154FF"),label=F)
+text(pl, "species", col="black", cex=1.2, font = 1)
+dev.off()
+
+```
+
+
+ We see that the two areas show some overlap indicating partial similarities in composition confirmed by adonis. 
+
+
+
+
